@@ -5,6 +5,5 @@
     }
   },
   "framework": "create-react-app",
-  "installCommand": "npm install --legacy-peer-deps",
-  "rootDirectory": "."
+  "installCommand": "npm install --legacy-peer-deps"
 }
