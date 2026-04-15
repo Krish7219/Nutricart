@@ -4,5 +4,6 @@
       "REACT_APP_API_URL": "https://nutricart-backend.vercel.app/api"
     }
   },
-  "framework": "create-react-app"
+  "framework": "create-react-app",
+  "installCommand": "npm install --legacy-peer-deps"
 }
