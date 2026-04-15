@@ -1,3 +1,8 @@
 {
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "https://nutricart-backend.vercel.app/api"
+    }
+  },
   "framework": "create-react-app"
 }
