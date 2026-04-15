@@ -5,17 +5,149 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { body, param, validationResult } = require('express-validator');
 const User = require('./models/User');
 const Meal = require('./models/Meal');
 const Vendor = require('./models/Vendor');
 const Order = require('./models/Order');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ============================
+// SECURITY CONFIGURATION
+// ============================
+
+// 1. Security Headers with Helmet
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://generativelanguage.googleapis.com"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// 2. Rate Limiting - Prevent brute force attacks
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: { success: false, error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // More generous limit
+  message: { success: false, error: 'Too many login attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const paymentLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // Limit payment requests
+  message: { success: false, error: 'Too many payment requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/', generalLimiter);
+
+// 3. CORS Configuration - Restrict allowed origins
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:3001',
+    ];
+    // Allow requests with no origin (mobile apps, curl requests) in development
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
+app.use(cors(corsOptions));
+
+// 4. Input Sanitization Middleware
+const sanitizeInput = (req, res, next) => {
+  const sanitize = (value) => {
+    if (typeof value === 'string') {
+      return value.replace(/[<>]/g, '').trim();
+    }
+    return value;
+  };
+
+  const recursiveSanitize = (obj) => {
+    if (obj && typeof obj === 'object') {
+      for (const key in obj) {
+        if (typeof obj[key] === 'string') {
+          obj[key] = sanitize(obj[key]);
+        } else if (typeof obj[key] === 'object') {
+          recursiveSanitize(obj[key]);
+        }
+      }
+    }
+  };
+
+  recursiveSanitize(req.body);
+  recursiveSanitize(req.query);
+  next();
+};
+
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: false, limit: '10kb' }));
+app.use(sanitizeInput);
+
+// 5. JWT Authentication Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Access token required' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ success: false, error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+const generateToken = (user) => {
+  return jwt.sign(
+    { id: user._id, email: user.email },
+    process.env.JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+};
+
+// 6. Request Validation Helper
+const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, errors: errors.array() });
+  }
+  next();
+};
 
 // Razorpay Instance
 const razorpay = new Razorpay({
@@ -42,22 +174,32 @@ app.get('/api/health', (req, res) => {
 
 // RAZORPAY PAYMENT ROUTES
 
-// Create payment order
-app.post('/api/payment/create-order', async (req, res) => {
+// Create payment order - with rate limiting and validation
+app.post('/api/payment/create-order', paymentLimiter, [
+  body('amount').isNumeric().withMessage('Amount must be a number'),
+  body('currency').optional().isString().matches(/^[A-Z]{3}$/).withMessage('Currency must be a 3-letter code'),
+], validateRequest, async (req, res) => {
   try {
     const { amount, currency = 'INR' } = req.body;
     
-    if (!amount) {
-      return res.status(400).json({ success: false, error: 'Amount is required' });
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, error: 'Valid amount is required' });
     }
     
-    // Amount is already in paise from frontend, no need to multiply
+    // Validate amount - prevent manipulation
+    const minAmount = 100; // Minimum 100 paise (₹1)
+    const maxAmount = 10000000; // Maximum ₹1,00,000
+    
+    if (amount < minAmount || amount > maxAmount) {
+      return res.status(400).json({ success: false, error: 'Invalid amount range' });
+    }
+    
     const amountInPaise = Math.round(amount);
     
     const options = {
       amount: amountInPaise,
       currency: currency,
-      receipt: 'order_' + Date.now(),
+      receipt: 'order_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex'),
     };
     
     const order = await razorpay.orders.create(options);
@@ -70,18 +212,22 @@ app.post('/api/payment/create-order', async (req, res) => {
     });
   } catch (error) {
     console.error('Razorpay order creation error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Payment processing error' });
   }
 });
 
 // Verify payment signature
-app.post('/api/payment/verify', async (req, res) => {
+app.post('/api/payment/verify', paymentLimiter, [
+  body('razorpay_order_id').notEmpty().withMessage('Order ID is required'),
+  body('razorpay_payment_id').notEmpty().withMessage('Payment ID is required'),
+  body('razorpay_signature').notEmpty().withMessage('Signature is required'),
+], validateRequest, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
     
     // Create signature verification
     const generatedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'your_razorpay_key_secret')
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
     
@@ -92,14 +238,14 @@ app.post('/api/payment/verify', async (req, res) => {
     }
   } catch (error) {
     console.error('Payment verification error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Payment verification failed' });
   }
 });
 
 // Get Razorpay key for frontend
 app.get('/api/payment/key', (req, res) => {
   res.json({
-    keyId: process.env.RAZORPAY_KEY_ID || 'your_razorpay_key_id'
+    keyId: process.env.RAZORPAY_KEY_ID
   });
 });
 
@@ -213,25 +359,57 @@ Provide helpful, accurate, and encouraging responses about fitness and nutrition
 
 // AUTH ROUTES
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
+// Login - without rate limiting for now
+app.post('/api/auth/login', [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('password').notEmpty().withMessage('Password is required'),
+], validateRequest, async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email, password });
+    const user = await User.findOne({ email });
     
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
     
+    let isPasswordValid = false;
+    
+    // Check if password is already hashed (bcrypt hash starts with $2)
+    if (user.password.startsWith('$2')) {
+      // New hashed password
+      isPasswordValid = await bcrypt.compare(password, user.password);
+    } else {
+      // Legacy plaintext password - check directly and upgrade to hash
+      if (user.password === password) {
+        isPasswordValid = true;
+        // Upgrade to hashed password for next login
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        await User.findByIdAndUpdate(user._id, { password: hashedPassword });
+      }
+    }
+    
+    if (!isPasswordValid) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+    
+    // Generate JWT token
+    const token = generateToken(user);
+    
     const { password: _, ...userWithoutPassword } = user.toObject();
-    res.json({ success: true, user: userWithoutPassword });
+    res.json({ success: true, user: userWithoutPassword, token });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, error: 'Authentication failed' });
   }
 });
 
-// Signup
-app.post('/api/auth/signup', async (req, res) => {
+// Signup - with strong password validation
+app.post('/api/auth/signup', [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('password').matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/).withMessage('Password must be at least 8 characters with 1 uppercase, 1 number, 1 symbol'),
+  body('name').isLength({ min: 1, max: 50 }).trim().escape().withMessage('Name is required'),
+], validateRequest, async (req, res) => {
   try {
     const { name, email, password, goals = [], dietary = [] } = req.body;
     
@@ -240,9 +418,13 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already exists' });
     }
     
+    // Hash password with bcrypt
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
     const newUser = new User({
       email,
-      password,
+      password: hashedPassword,
       name,
       goals,
       dietaryPreferences: dietary,
@@ -251,16 +433,26 @@ app.post('/api/auth/signup', async (req, res) => {
     });
     
     await newUser.save();
+    
+    // Generate JWT token
+    const token = generateToken(newUser);
+    
     const { password: _, ...userWithoutPassword } = newUser.toObject();
-    res.json({ success: true, user: userWithoutPassword });
+    res.json({ success: true, user: userWithoutPassword, token });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Signup error:', error);
+    res.status(500).json({ success: false, error: 'Registration failed' });
   }
 });
 
-// Get current user
-app.get('/api/auth/user/:id', async (req, res) => {
+// Get current user - protected route
+app.get('/api/auth/user/:id', authenticateToken, async (req, res) => {
   try {
+    // Verify user is accessing their own data
+    if (req.user.id !== req.params.id) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
     const user = await User.findById(req.params.id).select('-password');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -271,9 +463,22 @@ app.get('/api/auth/user/:id', async (req, res) => {
   }
 });
 
-// Update user
-app.put('/api/auth/user/:id', async (req, res) => {
+// Update user - protected route
+app.put('/api/auth/user/:id', authenticateToken, [
+  body('name').optional().isLength({ min: 2, max: 50 }).trim().escape(),
+  body('goals').optional().isArray(),
+  body('dietaryPreferences').optional().isArray(),
+  body('dailyCalorieLimit').optional().isNumeric(),
+], validateRequest, async (req, res) => {
   try {
+    // Verify user is updating their own data
+    if (req.user.id !== req.params.id) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
+    // Prevent password updates through this endpoint
+    delete req.body.password;
+    
     const user = await User.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -287,9 +492,13 @@ app.put('/api/auth/user/:id', async (req, res) => {
 
 // DAILY INTAKE ROUTES
 
-// Get today's intake
-app.get('/api/auth/user/:id/today-intake', async (req, res) => {
+// Get today's intake - protected route
+app.get('/api/auth/user/:id/today-intake', authenticateToken, async (req, res) => {
   try {
+    if (req.user.id !== req.params.id) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
     const user = await User.findById(req.params.id).select('-password');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -323,9 +532,19 @@ app.get('/api/auth/user/:id/today-intake', async (req, res) => {
   }
 });
 
-// Add meal to today's intake
-app.post('/api/auth/user/:id/daily-intake', async (req, res) => {
+// Add meal to today's intake - protected route
+app.post('/api/auth/user/:id/daily-intake', authenticateToken, [
+  body('name').isLength({ min: 1, max: 100 }).trim().escape(),
+  body('calories').isNumeric().withMessage('Calories must be a number'),
+  body('protein').optional().isNumeric(),
+  body('carbs').optional().isNumeric(),
+  body('fat').optional().isNumeric(),
+], validateRequest, async (req, res) => {
   try {
+    if (req.user.id !== req.params.id) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
     const { name, calories, protein, carbs, fat, type, mealId } = req.body;
     const userId = req.params.id;
     
@@ -391,9 +610,15 @@ app.post('/api/auth/user/:id/daily-intake', async (req, res) => {
   }
 });
 
-// Update daily calorie limit
-app.put('/api/auth/user/:id/calorie-limit', async (req, res) => {
+// Update daily calorie limit - protected route
+app.put('/api/auth/user/:id/calorie-limit', authenticateToken, [
+  body('dailyCalorieLimit').isNumeric().withMessage('Calorie limit must be a number'),
+], validateRequest, async (req, res) => {
   try {
+    if (req.user.id !== req.params.id) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
     const { dailyCalorieLimit } = req.body;
     const user = await User.findByIdAndUpdate(
       req.params.id,
@@ -493,10 +718,22 @@ app.get('/api/vendors/:id', async (req, res) => {
 
 // ORDERS ROUTES
 
-// Create order
-app.post('/api/orders', async (req, res) => {
+// Create order - protected route with validation
+app.post('/api/orders', authenticateToken, [
+  body('items').isArray({ min: 1 }).withMessage('Order must have at least one item'),
+  body('totalAmount').isNumeric().withMessage('Total amount is required'),
+  body('deliveryAddress').isLength({ min: 5 }).trim().escape().withMessage('Delivery address is required'),
+], validateRequest, async (req, res) => {
   try {
-    const { userId, items, totalAmount, deliveryAddress } = req.body;
+    const { items, totalAmount, deliveryAddress } = req.body;
+    const userId = req.user.id;
+    
+    // Validate total amount matches calculated total from items
+    const calculatedTotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const tolerance = 100; // Allow 1 INR tolerance
+    if (Math.abs(calculatedTotal - totalAmount) > tolerance) {
+      return res.status(400).json({ success: false, error: 'Invalid order amount' });
+    }
     
     const order = new Order({
       userId,
@@ -524,13 +761,18 @@ app.post('/api/orders', async (req, res) => {
     
     res.json({ success: true, order });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Order creation failed' });
   }
 });
 
-// Get user orders
-app.get('/api/orders/user/:userId', async (req, res) => {
+// Get user orders - protected route
+app.get('/api/orders/user/:userId', authenticateToken, async (req, res) => {
   try {
+    // Verify user is accessing their own orders
+    if (req.user.id !== req.params.userId) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
     const orders = await Order.find({ userId: req.params.userId })
       .populate('items.mealId')
       .sort({ createdAt: -1 });
@@ -540,8 +782,8 @@ app.get('/api/orders/user/:userId', async (req, res) => {
   }
 });
 
-// Get vendor orders (for vendor dashboard)
-app.get('/api/orders/vendor/:vendorId', async (req, res) => {
+// Get vendor orders (for vendor dashboard) - protected route
+app.get('/api/orders/vendor/:vendorId', authenticateToken, async (req, res) => {
   try {
     const meals = await Meal.find({ vendorId: req.params.vendorId }).select('_id');
     const mealIds = meals.map(m => m._id);

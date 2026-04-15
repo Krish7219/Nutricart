@@ -1,0 +1,11 @@
+{
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "@api-url"
+    },
+    "command": "npm run build",
+    "outputDirectory": "build"
+  },
+  "installCommand": "npm install",
+  "framework": "create-react-app"
+}

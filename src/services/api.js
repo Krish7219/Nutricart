@@ -1,13 +1,24 @@
 const API_URL = 'http://localhost:5000/api';
 
+const getAuthToken = () => {
+  return localStorage.getItem('nutricart_token');
+};
+
 // Helper function for API calls
 const fetchAPI = async (endpoint, options = {}) => {
   try {
+    const token = getAuthToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
     const response = await fetch(`${API_URL}${endpoint}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
+      headers,
       ...options,
     });
     

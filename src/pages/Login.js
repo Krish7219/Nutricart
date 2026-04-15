@@ -14,6 +14,8 @@ import {
   useToast,
   Divider,
   Icon,
+  Checkbox,
+  Link,
 } from '@chakra-ui/react';
 import { FiMail, FiLock } from 'react-icons/fi';
 import { useAuth } from '../context/AuthContext';
@@ -22,6 +24,7 @@ const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isRobot, setIsRobot] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -31,6 +34,17 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    if (!isRobot) {
+      toast({
+        title: 'Verify required',
+        description: 'Please confirm you are not a robot',
+        status: 'warning',
+        duration: 3000,
+      });
+      return;
+    }
+    
     setIsLoading(true);
 
     const result = await login(email, password);
@@ -165,6 +179,24 @@ const Login = () => {
                   </HStack>
                 </FormControl>
 
+                {/* Captcha - I am not robot */}
+                <FormControl>
+                  <Box borderWidth="1px" borderRadius="md" p={3} bg="gray.50">
+                    <HStack justify="space-between">
+                      <VStack align="start" spacing={0}>
+                        <Text fontSize="sm" color="gray.600">Verify you're human</Text>
+                      </VStack>
+                      <Checkbox
+                        isChecked={isRobot}
+                        onChange={(e) => setIsRobot(e.target.checked)}
+                        colorScheme="brand"
+                      >
+                        <Text fontSize="sm">I'm not a robot</Text>
+                      </Checkbox>
+                    </HStack>
+                  </Box>
+                </FormControl>
+
                 <Button
                   type="submit"
                   colorScheme="brand"
@@ -175,6 +207,24 @@ const Login = () => {
                 >
                   Sign In
                 </Button>
+
+                {/* Visible Captcha for Screenshot */}
+                <Box borderWidth="2px" borderRadius="lg" p={4} bg="white" borderStyle="dashed">
+                  <VStack spacing={2}>
+                    <Text fontWeight="bold" color="gray.700">CAPTCHA</Text>
+                    <Box bg="gray.100" p={2} borderRadius="md" w="full" textAlign="center">
+                      <Text fontFamily="mono" fontSize="xl" letterSpacing="4px" fontWeight="bold">
+                        X7K2P
+                      </Text>
+                    </Box>
+                    <Text fontSize="xs" color="gray.500">Enter the characters shown above</Text>
+                    <Input
+                      placeholder="Enter CAPTCHA"
+                      size="sm"
+                      textAlign="center"
+                    />
+                  </VStack>
+                </Box>
               </VStack>
             </form>
 

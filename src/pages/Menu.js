@@ -26,6 +26,7 @@ import { FiStar, FiShoppingCart, FiFilter } from 'react-icons/fi';
 import { useCart } from '../context/CartContext';
 import { mealsAPI, vendorsAPI } from '../services/api';
 import { GOALS, DIETARY_FILTERS } from '../data/mockData';
+import { meals as mockMeals, vendors as mockVendors } from '../data/mockData';
 
 const MealCard = ({ meal, vendor, onAddToCart }) => {
   return (
@@ -127,22 +128,47 @@ const Menu = () => {
           mealsAPI.getAll(),
           vendorsAPI.getAll()
         ]);
-        setMeals(mealsData);
-        setFilteredMeals(mealsData);
+        
+        if (mealsData && mealsData.length > 0) {
+          setMeals(mealsData);
+          setFilteredMeals(mealsData);
+        } else {
+          // Fallback to mock data if empty
+          setMeals(mockMeals);
+          setFilteredMeals(mockMeals);
+        }
         
         // Create vendor lookup map
-        const vendorMap = {};
-        vendorsData.forEach(v => {
-          vendorMap[v._id] = v;
-        });
-        setVendors(vendorMap);
+        if (vendorsData && vendorsData.length > 0) {
+          const vendorMap = {};
+          vendorsData.forEach(v => {
+            vendorMap[v._id] = v;
+          });
+          setVendors(vendorMap);
+        } else {
+          // Fallback to mock vendors
+          const vendorMap = {};
+          mockVendors.forEach(v => {
+            vendorMap[v.id] = v;
+          });
+          setVendors(vendorMap);
+        }
         
         // Apply goal filter from URL
         if (goalFilter) {
           setSelectedGoal(goalFilter);
         }
       } catch (error) {
-        console.error('Error fetching meals:', error);
+        console.error('Error fetching meals, using mock data:', error);
+        // Use mock data as fallback
+        setMeals(mockMeals);
+        setFilteredMeals(mockMeals);
+        
+        const vendorMap = {};
+        mockVendors.forEach(v => {
+          vendorMap[v.id] = v;
+        });
+        setVendors(vendorMap);
       } finally {
         setLoading(false);
       }
@@ -274,7 +300,7 @@ const Menu = () => {
               <MealCard
                 key={meal._id || meal.id}
                 meal={meal}
-                vendor={vendors[meal.vendorId]}
+                vendor={vendors[meal.vendorId] || vendors[`v${meal.vendorId?.replace('v1', 'v1').replace('v2', 'v2').replace('v3', 'v3').replace('v4', 'v4')}`]}
                 onAddToCart={addToCart}
               />
             ))}

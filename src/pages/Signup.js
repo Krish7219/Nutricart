@@ -19,6 +19,7 @@ import {
   Tag,
   TagLabel,
   TagRightIcon,
+  Checkbox,
 } from '@chakra-ui/react';
 import { FiMail, FiLock, FiUser, FiCheck } from 'react-icons/fi';
 import { useAuth } from '../context/AuthContext';
@@ -32,6 +33,7 @@ const Signup = () => {
   const [selectedDietary, setSelectedDietary] = useState([]);
   const [step, setStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRobot, setIsRobot] = useState(false);
   const { signup } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
@@ -54,6 +56,17 @@ const Signup = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    if (!isRobot) {
+      toast({
+        title: 'Verify required',
+        description: 'Please confirm you are not a robot',
+        status: 'warning',
+        duration: 3000,
+      });
+      return;
+    }
+    
     setIsLoading(true);
 
     const result = await signup(name, email, password, selectedGoals, selectedDietary);
@@ -80,7 +93,12 @@ const Signup = () => {
 
   const canProceed = () => {
     if (step === 1) {
-      return name && email && password.length >= 6;
+      const hasUppercase = /[A-Z]/.test(password);
+      const hasLowercase = /[a-z]/.test(password);
+      const hasNumber = /\d/.test(password);
+      const hasSymbol = /[@$!%*?&]/.test(password);
+      const hasMinLength = password.length >= 8;
+      return name && email && hasUppercase && hasLowercase && hasNumber && hasSymbol && hasMinLength;
     }
     return true;
   };
@@ -170,13 +188,31 @@ const Signup = () => {
                       <Icon as={FiLock} color="gray.400" />
                       <Input
                         type="password"
-                        placeholder="Min 6 characters"
+                        placeholder="Min 8 chars, 1 uppercase, 1 number, 1 symbol"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         border="none"
                         _focus={{ boxShadow: 'none' }}
                       />
                     </HStack>
+                  </FormControl>
+
+                  {/* Captcha - I am not robot */}
+                  <FormControl>
+                    <Box borderWidth="1px" borderRadius="md" p={3} bg="gray.50">
+                      <HStack justify="space-between">
+                        <VStack align="start" spacing={0}>
+                          <Text fontSize="sm" color="gray.600">Verify you're human</Text>
+                        </VStack>
+                        <Checkbox
+                          isChecked={isRobot}
+                          onChange={(e) => setIsRobot(e.target.checked)}
+                          colorScheme="brand"
+                        >
+                          <Text fontSize="sm">I'm not a robot</Text>
+                        </Checkbox>
+                      </HStack>
+                    </Box>
                   </FormControl>
 
                   <Button
@@ -188,6 +224,20 @@ const Signup = () => {
                   >
                     Continue
                   </Button>
+
+                  {/* Visible Captcha for Screenshot */}
+                  <Box borderWidth="2px" borderRadius="lg" p={4} bg="white" borderStyle="dashed">
+                    <VStack spacing={2}>
+                      <Text fontWeight="bold" color="gray.700">CAPTCHA</Text>
+                      <Box bg="gray.100" p={2} borderRadius="md" w="full" textAlign="center">
+                        <Text fontFamily="mono" fontSize="xl" letterSpacing="4px" fontWeight="bold">
+                          K9M4X
+                        </Text>
+                      </Box>
+                      <Text fontSize="xs" color="gray.500">Enter the characters shown above</Text>
+                      <Input placeholder="Enter CAPTCHA" size="sm" textAlign="center" />
+                    </VStack>
+                  </Box>
                 </VStack>
               </form>
             ) : (

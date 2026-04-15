@@ -15,14 +15,18 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [token, setToken] = useState(null);
 
   useEffect(() => {
-    // Check for stored user session
     const storedUser = localStorage.getItem('nutricart_user');
+    const storedToken = localStorage.getItem('nutricart_token');
     if (storedUser) {
       const userData = JSON.parse(storedUser);
       setUser(userData);
       setIsAuthenticated(true);
+    }
+    if (storedToken) {
+      setToken(storedToken);
     }
     setLoading(false);
   }, []);
@@ -33,7 +37,11 @@ export const AuthProvider = ({ children }) => {
       if (response.success) {
         setUser(response.user);
         setIsAuthenticated(true);
+        setToken(response.token);
         localStorage.setItem('nutricart_user', JSON.stringify(response.user));
+        if (response.token) {
+          localStorage.setItem('nutricart_token', response.token);
+        }
         return { success: true };
       }
     } catch (error) {
@@ -48,7 +56,11 @@ export const AuthProvider = ({ children }) => {
       if (response.success) {
         setUser(response.user);
         setIsAuthenticated(true);
+        setToken(response.token);
         localStorage.setItem('nutricart_user', JSON.stringify(response.user));
+        if (response.token) {
+          localStorage.setItem('nutricart_token', response.token);
+        }
         return { success: true };
       }
     } catch (error) {
@@ -60,7 +72,9 @@ export const AuthProvider = ({ children }) => {
   const logout = () => {
     setUser(null);
     setIsAuthenticated(false);
+    setToken(null);
     localStorage.removeItem('nutricart_user');
+    localStorage.removeItem('nutricart_token');
   };
 
   const updateUser = async (updates) => {
@@ -70,7 +84,6 @@ export const AuthProvider = ({ children }) => {
         setUser(updatedUser);
         localStorage.setItem('nutricart_user', JSON.stringify(updatedUser));
       } else if (user) {
-        // Fallback for mock data format (using id instead of _id)
         const updatedUser = { ...user, ...updates };
         setUser(updatedUser);
         localStorage.setItem('nutricart_user', JSON.stringify(updatedUser));
@@ -103,6 +116,7 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     isAuthenticated,
+    token,
     login,
     signup,
     logout,
